@@ -1,270 +1,282 @@
+import math
 import cv2
 import numpy as np
 
 
-def _odd(value: int) -> int:
-    value = int(value)
-    return value if value % 2 == 1 else value + 1
+def _orientation(p1, p2):
+    """Return undirected line orientation in degrees, normalized to [0, 180)."""
+    dx = float(p2[0] - p1[0])
+    dy = float(p2[1] - p1[1])
+    return math.degrees(math.atan2(dy, dx)) % 180.0
 
 
-def _segment(gray, threshold_mode="Auto"):
-    """Create a binary specimen mask using several simple segmentation strategies."""
-    if threshold_mode == "Adaptive":
-        binary = cv2.adaptiveThreshold(
-            gray,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            51,
-            5,
-        )
-    else:
-        _, binary = cv2.threshold(
-            gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
-
-    # We don't know whether the fabric or background is brighter.
-    # Prefer the mask whose largest meaningful component is not the whole image.
-    candidates = [binary, cv2.bitwise_not(binary)]
-
-    best = None
-    best_score = -1
-
-    h, w = gray.shape
-    image_area = h * w
-
-    for mask in candidates:
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
-            mask, connectivity=8
-        )
-
-        score = 0
-        for i in range(1, num_labels):
-            area = stats[i, cv2.CC_STAT_AREA]
-            if area < image_area * 0.005:
-                continue
-            if area > image_area * 0.95:
-                continue
-            score = max(score, area)
-
-        if score > best_score:
-            best_score = score
-            best = mask
-
-    if best is None:
-        best = binary
-
-    kernel = np.ones((5, 5), np.uint8)
-    best = cv2.morphologyEx(best, cv2.MORPH_CLOSE, kernel, iterations=2)
-    best = cv2.morphologyEx(best, cv2.MORPH_OPEN, kernel, iterations=1)
-
-    return best
-
-
-def _largest_contours(mask, min_area):
-    contours, _ = cv2.findContours(
-        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-    contours = [c for c in contours if cv2.contourArea(c) >= min_area]
-    contours.sort(key=cv2.contourArea, reverse=True)
-    return contours
-
-
-def _pca_angle(points):
-    points = np.asarray(points, dtype=np.float32)
-    if len(points) < 2:
-        raise ValueError("Not enough points for orientation estimation.")
-
-    mean = points.mean(axis=0)
-    centered = points - mean
-
-    _, _, vt = np.linalg.svd(centered, full_matrices=False)
-    direction = vt[0]
-
-    angle = np.degrees(np.arctan2(direction[1], direction[0]))
-    return angle, mean
-
-
-def _normalize_line_angle(angle):
-    # Line orientation is undirected: 0° and 180° are equivalent.
-    angle = angle % 180.0
-    return angle
-
-
-def _acute_difference(a, b):
-    diff = abs(a - b) % 180.0
+def _included_angle(theta1, theta2):
+    """Return the smaller angle between two undirected lines."""
+    diff = abs(float(theta1) - float(theta2)) % 180.0
     return min(diff, 180.0 - diff)
 
 
-def _split_points(points, crease_point, side):
-    x0, y0 = crease_point
-    pts = np.asarray(points)
-
-    if side == "left":
-        return pts[pts[:, 0] < x0]
-    return pts[pts[:, 0] >= x0]
-
-
-def analyze_crease_image(
-    image_rgb,
-    threshold_mode="Auto",
-    blur_size=5,
-    min_area=1000,
-    line_percent=0.50,
-):
+def calculate_cra(crease, arm1_point, arm2_point):
     """
-    Estimate CRA from a textile image.
+    Calculate CRA from a crease point and one point along each fabric arm.
 
-    This is a general-purpose image-analysis prototype. It assumes the specimen
-    forms two visible arms around a central crease. For laboratory-grade results,
-    the image setup and algorithm should be calibrated against the applicable
-    textile standard and reference measurements.
+    The points should be chosen along the centerline/direction of the fabric
+    arms rather than on their outer edges.
+    """
+    if crease is None or arm1_point is None or arm2_point is None:
+        raise ValueError("Three points are required.")
+
+    if crease == arm1_point or crease == arm2_point:
+        raise ValueError("Arm points must be different from the crease point.")
+
+    theta1 = _orientation(crease, arm1_point)
+    theta2 = _orientation(crease, arm2_point)
+    angle = _included_angle(theta1, theta2)
+
+    return float(angle), float(theta1), float(theta2)
+
+
+def _distance_point_to_point(a, b):
+    return math.hypot(float(a[0] - b[0]), float(a[1] - b[1]))
+
+
+def _distance_point_to_segment(point, a, b):
+    p = np.asarray(point, dtype=float)
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+
+    ab = b - a
+    denom = np.dot(ab, ab)
+    if denom == 0:
+        return float(np.linalg.norm(p - a))
+
+    t = np.dot(p - a, ab) / denom
+    t = max(0.0, min(1.0, t))
+    projection = a + t * ab
+    return float(np.linalg.norm(p - projection))
+
+
+def detect_automatic_arms(image_rgb, crease, canny_threshold=60):
+    """
+    Experimental automatic line detection.
+
+    It searches for Hough line segments close to the supplied crease point and
+    selects two geometrically distinct directions. This is intentionally
+    conservative because background/table edges can otherwise be mistaken for
+    fabric edges.
     """
     if image_rgb is None or image_rgb.ndim != 3:
-        raise ValueError("Invalid RGB image.")
+        raise ValueError("Invalid image.")
 
-    original = image_rgb.copy()
-    gray = cv2.cvtColor(original, cv2.COLOR_RGB2GRAY)
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    blur_size = max(1, min(15, int(blur_size)))
-    blur_size = _odd(blur_size)
+    high = int(max(20, min(255, canny_threshold)))
+    low = max(10, int(high * 0.45))
 
-    if blur_size > 1:
-        gray = cv2.GaussianBlur(gray, (blur_size, blur_size), 0)
+    edges = cv2.Canny(gray, low, high)
 
-    mask = _segment(gray, threshold_mode)
-    contours = _largest_contours(mask, min_area)
+    h, w = gray.shape
+    min_len = max(15, int(min(h, w) * 0.10))
 
-    if not contours:
-        raise ValueError(
-            "No sufficiently large specimen region was detected. "
-            "Try a clearer image or reduce the minimum contour area."
-        )
-
-    # Use the largest contour as the primary specimen.
-    contour = contours[0]
-    pts = contour.reshape(-1, 2)
-
-    if len(pts) < 10:
-        raise ValueError("The detected specimen contour is too small.")
-
-    # Estimate a central crease point using the contour's center.
-    moments = cv2.moments(contour)
-    if moments["m00"] != 0:
-        cx = moments["m10"] / moments["m00"]
-        cy = moments["m01"] / moments["m00"]
-    else:
-        cx, cy = np.mean(pts, axis=0)
-
-    crease_point = (int(round(cx)), int(round(cy)))
-
-    left = _split_points(pts, crease_point, "left")
-    right = _split_points(pts, crease_point, "right")
-
-    # If one side is too small, fall back to an x-based split at the median.
-    if len(left) < 10 or len(right) < 10:
-        median_x = np.median(pts[:, 0])
-        crease_point = (int(round(median_x)), int(round(cy)))
-        left = _split_points(pts, crease_point, "left")
-        right = _split_points(pts, crease_point, "right")
-
-    if len(left) < 10 or len(right) < 10:
-        raise ValueError(
-            "The algorithm could not identify two distinct fabric arms."
-        )
-
-    # Prefer points farther from the estimated crease because they generally
-    # represent the arm direction more clearly than the curved crease region.
-    x0, y0 = crease_point
-
-    def select_arm(points):
-        p = np.asarray(points)
-        distances = np.sqrt((p[:, 0] - x0) ** 2 + (p[:, 1] - y0) ** 2)
-        cutoff = np.quantile(distances, max(0.0, min(1.0, 1.0 - line_percent)))
-        selected = p[distances >= cutoff]
-        return selected if len(selected) >= 5 else p
-
-    left_fit = select_arm(left)
-    right_fit = select_arm(right)
-
-    theta1_raw, left_center = _pca_angle(left_fit)
-    theta2_raw, right_center = _pca_angle(right_fit)
-
-    theta1 = _normalize_line_angle(theta1_raw)
-    theta2 = _normalize_line_angle(theta2_raw)
-
-    angle = _acute_difference(theta1, theta2)
-
-    # A rough confidence score based on arm point counts and separation.
-    point_score = min(1.0, (len(left_fit) + len(right_fit)) / 200.0)
-    separation = abs(theta1 - theta2)
-    separation_score = min(1.0, separation / 30.0) if separation > 0 else 0.0
-    confidence = 0.55 * point_score + 0.45 * separation_score
-
-    # Annotated RGB image.
-    annotated = original.copy()
-
-    # Specimen contour.
-    cv2.drawContours(annotated, [contour], -1, (0, 255, 0), 2)
-
-    # Crease point.
-    cv2.circle(annotated, crease_point, 8, (255, 0, 0), -1)
-
-    # Draw fitted lines from the crease toward each arm center.
-    def draw_arm(center, point_color):
-        center = np.asarray(center, dtype=float)
-        start = np.asarray(crease_point, dtype=float)
-
-        vector = center - start
-        norm = np.linalg.norm(vector)
-        if norm < 1:
-            return
-
-        unit = vector / norm
-        length = max(80.0, norm * 1.8)
-
-        p1 = start
-        p2 = start + unit * length
-
-        cv2.line(
-            annotated,
-            tuple(np.round(p1).astype(int)),
-            tuple(np.round(p2).astype(int)),
-            point_color,
-            4,
-            cv2.LINE_AA,
-        )
-
-    draw_arm(left_center, (255, 255, 0))
-    draw_arm(right_center, (255, 0, 255))
-
-    cv2.putText(
-        annotated,
-        f"CRA: {angle:.2f} deg",
-        (20, 40),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1.0,
-        (255, 255, 255),
-        3,
-        cv2.LINE_AA,
+    lines = cv2.HoughLinesP(
+        edges,
+        rho=1,
+        theta=np.pi / 180,
+        threshold=max(15, int(min(h, w) * 0.08)),
+        minLineLength=min_len,
+        maxLineGap=max(5, int(min(h, w) * 0.03)),
     )
-    cv2.putText(
-        annotated,
-        f"CRA: {angle:.2f} deg",
-        (20, 40),
-        cv2.FONT_HERSHEY_SIMPLEX,
+
+    if lines is None:
+        raise ValueError("No line segments were detected.")
+
+    candidates = []
+
+    for item in lines[:, 0]:
+        x1, y1, x2, y2 = map(int, item)
+        p1 = (x1, y1)
+        p2 = (x2, y2)
+
+        length = _distance_point_to_point(p1, p2)
+        if length < min_len:
+            continue
+
+        distance = _distance_point_to_segment(crease, p1, p2)
+
+        # Only consider lines reasonably close to the crease.
+        max_distance = max(30.0, min(h, w) * 0.25)
+        if distance > max_distance:
+            continue
+
+        theta = _orientation(p1, p2)
+
+        # Score long lines near the crease.
+        score = (length / (distance + 10.0))
+
+        candidates.append(
+            {
+                "p1": p1,
+                "p2": p2,
+                "length": length,
+                "distance": distance,
+                "theta": theta,
+                "score": score,
+            }
+        )
+
+    if len(candidates) < 2:
+        raise ValueError(
+            "Automatic mode could not find two suitable arm lines. "
+            "Use Guided / Manual mode."
+        )
+
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+
+    selected = []
+    angle_separation_required = 12.0
+
+    for candidate in candidates:
+        if not selected:
+            selected.append(candidate)
+            continue
+
+        if all(
+            _included_angle(candidate["theta"], other["theta"])
+            >= angle_separation_required
+            for other in selected
+        ):
+            selected.append(candidate)
+            break
+
+    if len(selected) < 2:
+        # Fall back to the two strongest candidates.
+        selected = candidates[:2]
+
+    first, second = selected[0], selected[1]
+
+    def nearest_endpoint(line):
+        d1 = _distance_point_to_point(crease, line["p1"])
+        d2 = _distance_point_to_point(crease, line["p2"])
+        return line["p1"] if d1 < d2 else line["p2"]
+
+    arm1 = nearest_endpoint(first)
+    arm2 = nearest_endpoint(second)
+
+    # Extend each detected direction away from the crease to create usable
+    # points for the measurement overlay.
+    def extend_from_crease(point, length):
+        vx = point[0] - crease[0]
+        vy = point[1] - crease[1]
+        norm = math.hypot(vx, vy)
+        if norm < 1:
+            return point
+        scale = max(1.0, length / norm)
+        return (
+            int(round(crease[0] + vx * scale)),
+            int(round(crease[1] + vy * scale)),
+        )
+
+    arm1 = extend_from_crease(arm1, max(first["length"], min(h, w) * 0.35))
+    arm2 = extend_from_crease(arm2, max(second["length"], min(h, w) * 0.35))
+
+    angle, theta1, theta2 = calculate_cra(crease, arm1, arm2)
+
+    # Confidence favors long, close, distinct candidate lines.
+    length_score = min(
         1.0,
-        (0, 0, 0),
-        1,
-        cv2.LINE_AA,
+        (first["length"] + second["length"]) / max(1.0, min(h, w) * 1.5),
+    )
+    distance_score = max(
+        0.0,
+        1.0 - (first["distance"] + second["distance"]) / max(1.0, min(h, w)),
+    )
+    separation_score = min(
+        1.0,
+        _included_angle(theta1, theta2) / 45.0,
+    )
+
+    confidence = (
+        0.40 * length_score
+        + 0.35 * distance_score
+        + 0.25 * separation_score
     )
 
     return {
-        "angle": float(angle),
-        "theta1": float(theta1),
-        "theta2": float(theta2),
-        "confidence": float(max(0.0, min(1.0, confidence))),
-        "crease_point": crease_point,
-        "annotated": annotated,
-        "mask": mask,
+        "arm1": arm1,
+        "arm2": arm2,
+        "theta1": theta1,
+        "theta2": theta2,
+        "angle": angle,
+        "confidence": max(0.0, min(1.0, confidence)),
+        "edges": edges,
     }
+
+
+def draw_measurement(
+    image_rgb,
+    crease,
+    arm1,
+    arm2,
+    angle,
+    labels=True,
+):
+    """Draw the measured geometry on an RGB image."""
+    output = image_rgb.copy()
+
+    cv2.circle(output, tuple(map(int, crease)), 7, (255, 0, 0), -1)
+
+    cv2.line(
+        output,
+        tuple(map(int, crease)),
+        tuple(map(int, arm1)),
+        (255, 220, 0),
+        4,
+        cv2.LINE_AA,
+    )
+
+    cv2.line(
+        output,
+        tuple(map(int, crease)),
+        tuple(map(int, arm2)),
+        (255, 0, 255),
+        4,
+        cv2.LINE_AA,
+    )
+
+    if labels:
+        text = f"CRA = {angle:.2f} deg"
+
+        cv2.putText(
+            output,
+            text,
+            (15, 35),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (255, 255, 255),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            output,
+            text,
+            (15, 35),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (0, 0, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+        cv2.putText(
+            output,
+            "Crease",
+            (int(crease[0]) + 8, int(crease[1]) - 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    return output
