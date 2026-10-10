@@ -1,41 +1,31 @@
-# Crease Recovery Angle Analyzer
+Crease Recovery Angle Analyzer — V2
 
-A Streamlit web application for estimating **Crease Recovery Angle (CRA)** from a textile specimen image using computer vision.
+A Streamlit research prototype for estimating the Crease Recovery Angle (CRA) of textile specimens from photographs.
 
-## Features
+Why V2 is different
 
-- Upload JPG, JPEG, PNG, BMP, TIF or TIFF images
-- Automatic image preprocessing
-- Threshold-based textile/background segmentation
-- Specimen contour detection
-- Estimation of the two fabric-arm orientations
-- Automatic CRA calculation
-- Annotated result image
-- Rough confidence indicator
-- Downloadable annotated image
-- Runs locally or on Streamlit Community Cloud
+The first version tried to identify the specimen from the whole photograph using the largest image contour. In laboratory photographs this can fail because the table, shadows, background boundaries, or other objects may create larger contours than the actual textile specimen.
 
-## Important scientific note
+V2 therefore uses a guided measurement workflow:
 
-This repository is a **research/prototype image-analysis system**. The current algorithm is intentionally general-purpose and should not be treated as a validated replacement for a textile testing standard.
+Upload the photograph.
 
-For laboratory or publication use, the algorithm should be validated against the exact test method being followed, including:
+Crop tightly around the specimen.
 
-- specimen dimensions
-- folding procedure
-- recovery time
-- camera position
-- lighting
-- background
-- scale/calibration
-- angle definition
-- manual/reference measurements
+Click the crease point.
 
-The applicable standard should be specified before final validation.
+Click one point along the first fabric arm.
 
-## Project structure
+Click one point along the second fabric arm.
 
-```text
+The application calculates the angle between those two directions.
+
+Download the annotated result.
+
+There is also an Automatic (experimental) mode, but Guided / Manual mode is recommended for research measurements.
+
+Project structure
+
 crease-recovery-angle/
 │
 ├── app.py
@@ -43,115 +33,131 @@ crease-recovery-angle/
 ├── requirements.txt
 ├── README.md
 └── .gitignore
-```
 
-## Run locally
+Main file
 
-### 1. Install Python
+The Streamlit entry point is:
 
-Python 3.10 or newer is recommended.
+app.py
 
-### 2. Create a virtual environment
+Deploy app.py as the main file in Streamlit Community Cloud.
+
+Local installation
+
+python -m venv .venv
 
 Windows:
 
-```bash
-python -m venv .venv
 .venv\Scripts\activate
-```
 
 macOS/Linux:
 
-```bash
-python3 -m venv .venv
 source .venv/bin/activate
-```
 
-### 3. Install dependencies
+Install dependencies:
 
-```bash
 pip install -r requirements.txt
-```
 
-### 4. Start Streamlit
+Run:
 
-```bash
 streamlit run app.py
-```
 
-The application will open in your browser.
+Streamlit Community Cloud
 
-## GitHub
+When Streamlit asks for the Main file path, select:
 
-Create a new GitHub repository and upload:
-
-```text
 app.py
-cra_analysis.py
-requirements.txt
-README.md
-.gitignore
-```
 
-Or from a terminal:
+Do not select cra_analysis.py.
 
-```bash
-git init
-git add .
-git commit -m "Initial crease recovery angle analyzer"
-git branch -M main
-git remote add origin YOUR_GITHUB_REPOSITORY_URL
-git push -u origin main
-```
+How to measure a specimen
 
-## Deploy on Streamlit Community Cloud
+Step 1 — Photograph
 
-1. Push the project to GitHub.
-2. Open Streamlit Community Cloud.
-3. Create a new app.
-4. Select your GitHub repository.
-5. Select the `main` branch.
-6. Set the main file to:
+Use a stable camera position, preferably perpendicular to the specimen/test plane.
 
-```text
-app.py
-```
+Avoid:
 
-7. Deploy.
+strong shadows
 
-Streamlit will install the packages listed in `requirements.txt`.
+reflective surfaces
 
-## Recommended image acquisition
+patterned backgrounds
 
-For more reliable results:
+severe perspective distortion
 
-- Place the specimen on a matte, uniform background.
-- Use diffuse lighting.
-- Avoid strong shadows.
-- Keep the camera perpendicular to the specimen.
-- Keep camera distance and resolution consistent.
-- Keep the specimen fully visible.
-- Use the same recovery time for every measurement.
+motion blur
 
-## Future improvements
+Step 2 — Crop
 
-The next version can add:
+Crop tightly around the specimen. The crop should contain the complete folded fabric and as little background as possible.
 
-1. Manual selection of the crease point.
-2. Automatic perspective correction.
-3. Camera calibration.
-4. A physical reference scale.
-5. Region-of-interest selection.
-6. Better fabric/background segmentation.
-7. More robust line fitting.
-8. Batch image analysis.
-9. CSV/Excel export.
-10. Measurement history.
-11. Experimental/reference CRA comparison.
-12. Accuracy, repeatability and reproducibility statistics.
-13. Automatic image-quality warnings.
-14. Support for a specific ASTM/ISO test workflow.
+Step 3 — Select three points
 
-## License
+Click:
 
-Add the license appropriate for your project before publishing the repository.
+1. Crease point
+2. Point along fabric arm 1
+3. Point along fabric arm 2
+
+The application calculates the included angle between the two directions.
+
+Important
+
+Click the centerline of each fabric arm, not its outer edge. If the fabric is thick or irregular, repeat the measurement using consistent point-selection rules.
+
+Scientific validation
+
+This application is not automatically compliant with any particular ASTM or ISO method.
+
+Before using it for a thesis, paper, laboratory report, or standard testing, specify the exact method being followed and validate the software against reference measurements.
+
+A useful validation dataset should contain multiple specimens covering the expected range of CRA values.
+
+Compare:
+
+manual/reference CRA
+
+image-analysis CRA
+
+absolute error
+
+mean absolute error
+
+standard deviation
+
+repeatability
+
+inter-observer variation, where applicable
+
+Recommended next development
+
+For a fully automatic laboratory system, the next version should incorporate:
+
+fixed camera geometry
+
+perspective correction
+
+controlled lighting
+
+specimen fixture detection
+
+automatic crease localization
+
+fabric-arm centerline extraction
+
+automatic quality checks
+
+calibration using reference images
+
+batch processing
+
+CSV/Excel export
+
+validation statistics
+
+measurement history
+
+License
+
+Choose and add an appropriate open-source or institutional license before publishing the repository.
